@@ -449,7 +449,13 @@ function Invoke-ModelSetup {
 function Set-UvEnvironment {
     $env:UV_PYTHON_INSTALL_DIR = $PythonDir
     $env:UV_CACHE_DIR          = $UvCacheDir
-    $env:UV_NO_MODIFY_PATH     = "1"   # belt and braces: uv must not edit PATH
+    $env:UV_NO_MODIFY_PATH     = "1"     # belt and braces: uv must not edit PATH
+    # Only ever use uv's own managed CPython, never a system Python (isolation).
+    $env:UV_PYTHON_PREFERENCE  = "only-managed"
+    # Do NOT create the global "minor version link" shims. On some Windows setups
+    # creating that junction fails with "untrusted mount point" (os error 448),
+    # and we do not need global shims because everything runs through the venv.
+    $env:UV_PYTHON_INSTALL_BIN = "0"
 }
 
 function Install-Uv {
@@ -476,29 +482,27 @@ function Install-Uv {
     Write-Log "uv installed." 'OK'
 }
 
-function Install-Python {
-    Set-UvEnvironment
-    Write-Log ("Provisioning CPython " + $PythonVersion + " (downloaded once, stored under the install folder)...")
-    # uv python install is idempotent: it is a no-op if the version is present.
-    Invoke-Exe -FilePath $UvExe -Arguments @("python","install",$PythonVersion) -What "Python provisioning"
-    Write-Log ("Python " + $PythonVersion + " ready.") 'OK'
-}
-
 # ---------------------------------------------------------------------------
 # STEP 6: OPEN WEBUI INTO AN ISOLATED VENV
 # ---------------------------------------------------------------------------
 
 function Install-OpenWebUI {
-    Write-Log "Installing Open WebUI (the chat app). This downloads several packages..." 'STEP'
+    Write-Log "Setting up a private Python and installing Open WebUI (the chat app)..." 'STEP'
+    Set-UvEnvironment
 
     if (Test-Path $OpenWebUIExe) {
         Write-Log "Open WebUI already installed in its private environment. Skipping." 'OK'
         return
     }
 
-    # Create the isolated venv with the pinned Python. This is separate from the
-    # bundled interpreter's own site-packages, exactly as the spec requires.
+    # Create the isolated venv with the pinned Python. We deliberately do NOT run
+    # "uv python install" first: that step also creates global version-link shims,
+    # which can fail on Windows with "untrusted mount point" (os error 448).
+    # "uv venv --python 3.12" downloads the managed interpreter on demand into our
+    # scoped UV_PYTHON_INSTALL_DIR and builds the venv, without the global shims.
+    # The venv is separate from the interpreter's own site-packages, per the spec.
     if (-not (Test-Path (Join-Path $VenvDir "Scripts"))) {
+        Write-Log ("Provisioning CPython " + $PythonVersion + " and creating the environment (downloaded once)...")
         Invoke-Exe -FilePath $UvExe -Arguments @("venv","--python",$PythonVersion,$VenvDir) -What "Creating the Python environment"
     }
 
@@ -604,7 +608,6 @@ try {
     Start-OllamaServer
     Invoke-ModelSetup
     Install-Uv
-    Install-Python
     Install-OpenWebUI
     Write-Launcher
     New-DesktopShortcut

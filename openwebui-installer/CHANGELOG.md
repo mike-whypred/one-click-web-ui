@@ -149,6 +149,12 @@ Python runtime) is first.
   such line became a terminating `NativeCommandError` and killed the install at
   "Provisioning CPython". `Invoke-Exe` and the ollama list/pull block now relax
   the error preference for the native call and judge success by exit code only.
+- **No more global Python shims (os error 448).** `uv python install` also tries
+  to create a global "minor version link" junction, which failed on Windows 11
+  with "untrusted mount point". We dropped the standalone install step and let
+  `uv venv --python 3.12` provision the managed interpreter on demand (no global
+  shims), and set `UV_PYTHON_PREFERENCE=only-managed` and
+  `UV_PYTHON_INSTALL_BIN=0` for isolation and as defense.
 
 ## Notes / things to re-verify when maintaining
 
