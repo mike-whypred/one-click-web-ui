@@ -27,10 +27,11 @@ openwebui-installer/
 ```
 
 Key decisions made during the build (full rationale in `CHANGELOG.md`): Python runtime is a
-**uv-managed standalone CPython + venv** (not the embeddable zip, not raw python-build-standalone
-tarballs); `$PythonVersion = 3.12`; `$MinOllamaVersion = 0.22.0`; **no UAC** (all installs are
-per-user); hidden launch via a generated `.vbs` run by `wscript`; "already running" detection via
-PID+path+health (not path-substring). Stretch goals done: uninstaller, NVIDIA GPU note, disk-space
+**self-extracted python-build-standalone CPython 3.12 + `python -m venv`**, with `uv` kept only
+as the fast `pip` installer (uv-managed Python was abandoned because its directory junctions hit
+"untrusted mount point" / os error 448 on Windows 11; python.org has no current 3.12 installer);
+`$MinOllamaVersion = 0.22.0`; **no UAC** (all installs are per-user); hidden launch via a generated
+`.vbs` run by `wscript`; "already running" detection via PID+path+health (not path-substring). Stretch goals done: uninstaller, NVIDIA GPU note, disk-space
 guard, Inno Setup `setup.iss` wrapper (per-user, builds `dist\setup.exe`, signable).
 
 Note: the spec references a prototype (`install.ps1`, `Install-OpenWebUI.bat`, `README.md`

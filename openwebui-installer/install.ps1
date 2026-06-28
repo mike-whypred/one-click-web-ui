@@ -81,8 +81,11 @@ $RuntimeDir  = Join-Path $InstallRoot "runtime"   # pid/port state for the launc
 $DataDir     = Join-Path $InstallRoot "data"      # Open WebUI accounts and chats
 $UvDir       = Join-Path $InstallRoot "uv"        # uv.exe lives here
 $UvExe       = Join-Path $UvDir "uv.exe"
-$PythonDir   = Join-Path $InstallRoot "python"    # uv-managed CPython installs
 $UvCacheDir  = Join-Path $InstallRoot "uv-cache"
+$PyBase        = Join-Path $InstallRoot "cpython" # we extract python-build-standalone here
+$PythonDir     = Join-Path $PyBase "python"       # the archive's top-level folder
+$BundledPython = Join-Path $PythonDir "python.exe"
+$LegacyPythonDir = Join-Path $InstallRoot "python" # leftover from old uv-managed attempts
 $VenvDir     = Join-Path $InstallRoot "venv"      # isolated Open WebUI environment
 $OpenWebUIExe = Join-Path $VenvDir "Scripts\open-webui.exe"
 
@@ -90,12 +93,20 @@ $OllamaDownloadUrl = "https://ollama.com/download/OllamaSetup.exe"
 $OllamaDefaultExe  = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
 $OllamaApiUrl      = "http://localhost:11434"
 
-# uv ships a stable "latest" redirect for each platform asset. This is the only
-# domain we use beyond the spec's allow-list (ollama.com, python.org /
-# python-build-standalone GitHub releases, pypi.org); uv itself lives in the
-# astral-sh GitHub org and in turn fetches python-build-standalone (allowed)
-# and packages from pypi (allowed).
+# uv ships a stable "latest" redirect for each platform asset, used only for fast
+# package installs (uv pip). We do NOT use uv-managed Python, because uv lays its
+# managed interpreters out behind a directory junction (minor-version link) and
+# traversing that junction fails on Windows machines that enforce redirection
+# trust ("untrusted mount point", os error 448). Instead we fetch a
+# python-build-standalone CPython (spec Option B) and extract it ourselves, which
+# produces only real folders.
 $UvDownloadUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
+
+# Pinned python-build-standalone CPython 3.12 (install_only = a clean, relocatable
+# interpreter, no junctions). Pinned to a dated release so the URL never rots.
+# python.org cannot be used here: 3.12 is in its security-only phase and ships
+# source only (no Windows installer), and Open WebUI requires Python < 3.13.
+$PythonUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.12.13+20260623-x86_64-pc-windows-msvc-install_only.tar.gz"
 
 # Disk space we want free before pulling a multi-GB model (stretch goal guard).
 $MinFreeGB = 15
@@ -444,22 +455,54 @@ function Invoke-ModelSetup {
 # STEP 5: PYTHON RUNTIME (via uv)
 # ---------------------------------------------------------------------------
 
-# Point uv at our directories so the interpreter, cache and venv all live under
-# the install root and nothing touches the user's machine-wide setup or PATH.
+# Scope uv to our directories so its cache lives under the install root and it
+# never touches the user's machine-wide setup or PATH.
 function Set-UvEnvironment {
-    $env:UV_PYTHON_INSTALL_DIR = $PythonDir
-    $env:UV_CACHE_DIR          = $UvCacheDir
-    $env:UV_NO_MODIFY_PATH     = "1"     # belt and braces: uv must not edit PATH
-    # Only ever use uv's own managed CPython, never a system Python (isolation).
-    $env:UV_PYTHON_PREFERENCE  = "only-managed"
-    # Do NOT create the global "minor version link" shims. On some Windows setups
-    # creating that junction fails with "untrusted mount point" (os error 448),
-    # and we do not need global shims because everything runs through the venv.
-    $env:UV_PYTHON_INSTALL_BIN = "0"
+    $env:UV_CACHE_DIR      = $UvCacheDir
+    $env:UV_NO_MODIFY_PATH = "1"          # uv must not edit PATH
+    # Force plain file copies. Never use hardlinks/symlinks/junctions, which have
+    # repeatedly failed on this class of Windows machine (os error 448). Slightly
+    # more disk, but bulletproof.
+    $env:UV_LINK_MODE      = "copy"
+    # We provide the interpreter explicitly, so never auto-download a managed one.
+    $env:UV_PYTHON_DOWNLOADS = "never"
+}
+
+function Install-Python {
+    Write-Log "Setting up a private Python (bundled, separate from any Python you may have)..." 'STEP'
+
+    if (Test-Path $BundledPython) {
+        Write-Log "Private Python already present. Skipping its download." 'OK'
+        return
+    }
+
+    # Clean up any leftover from older uv-managed attempts. That folder can
+    # contain a directory junction we must NOT traverse, so remove it with
+    # "rmdir" (which deletes the junction itself, not its target) rather than
+    # Remove-Item -Recurse (which would try to traverse it). Best effort only.
+    foreach ($stale in @($LegacyPythonDir, $PyBase)) {
+        if (Test-Path $stale) {
+            cmd /c rmdir /s /q "$stale" 2>$null | Out-Null
+        }
+    }
+    New-Item -ItemType Directory -Path $PyBase -Force | Out-Null
+
+    $tgz = Join-Path $env:TEMP "python-standalone.tar.gz"
+    Invoke-Download -Url $PythonUrl -OutFile $tgz
+    Write-Log ("Extracting CPython " + $PythonVersion + "...")
+    # tar.exe (bsdtar) ships with Windows 10 1803+ and extracts .tar.gz natively.
+    # The archive's single top-level folder is "python", so it lands at $PythonDir.
+    Invoke-Exe -FilePath "tar.exe" -Arguments @("-xf",$tgz,"-C",$PyBase) -What "Extracting Python"
+    Remove-Item $tgz -ErrorAction SilentlyContinue
+
+    if (-not (Test-Path $BundledPython)) {
+        throw "Python was downloaded but python.exe is missing after extraction."
+    }
+    Write-Log ("Python " + $PythonVersion + " ready.") 'OK'
 }
 
 function Install-Uv {
-    Write-Log "Setting up a private Python (bundled, separate from any Python you may have)..." 'STEP'
+    Write-Log "Setting up the fast package installer (uv)..." 'STEP'
 
     if (Test-Path $UvExe) {
         Write-Log "uv (the Python manager) already present. Skipping its download." 'OK'
@@ -487,7 +530,7 @@ function Install-Uv {
 # ---------------------------------------------------------------------------
 
 function Install-OpenWebUI {
-    Write-Log "Setting up a private Python and installing Open WebUI (the chat app)..." 'STEP'
+    Write-Log "Installing Open WebUI (the chat app). This downloads several packages..." 'STEP'
     Set-UvEnvironment
 
     if (Test-Path $OpenWebUIExe) {
@@ -495,19 +538,16 @@ function Install-OpenWebUI {
         return
     }
 
-    # Create the isolated venv with the pinned Python. We deliberately do NOT run
-    # "uv python install" first: that step also creates global version-link shims,
-    # which can fail on Windows with "untrusted mount point" (os error 448).
-    # "uv venv --python 3.12" downloads the managed interpreter on demand into our
-    # scoped UV_PYTHON_INSTALL_DIR and builds the venv, without the global shims.
-    # The venv is separate from the interpreter's own site-packages, per the spec.
+    # Create the isolated venv using CPython's own venv module (pure file copies,
+    # no links or junctions). This is separate from the bundled interpreter's own
+    # site-packages, exactly as the spec requires.
     if (-not (Test-Path (Join-Path $VenvDir "Scripts"))) {
-        Write-Log ("Provisioning CPython " + $PythonVersion + " and creating the environment (downloaded once)...")
-        Invoke-Exe -FilePath $UvExe -Arguments @("venv","--python",$PythonVersion,$VenvDir) -What "Creating the Python environment"
+        Write-Log "Creating the private Python environment..."
+        Invoke-Exe -FilePath $BundledPython -Arguments @("-m","venv",$VenvDir) -What "Creating the Python environment"
     }
 
     # Install Open WebUI from PyPI into that venv. "uv pip install --python"
-    # targets the venv interpreter explicitly.
+    # targets the venv interpreter explicitly and is far faster than plain pip.
     $venvPython = Join-Path $VenvDir "Scripts\python.exe"
     Invoke-Exe -FilePath $UvExe -Arguments @("pip","install","--python",$venvPython,"open-webui") -What "Installing Open WebUI"
 
@@ -608,6 +648,7 @@ try {
     Start-OllamaServer
     Invoke-ModelSetup
     Install-Uv
+    Install-Python
     Install-OpenWebUI
     Write-Launcher
     New-DesktopShortcut

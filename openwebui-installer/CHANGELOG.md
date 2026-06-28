@@ -4,24 +4,30 @@ This rebuild follows the build spec rather than transcribing the prototype.
 Each deviation below has a one-line rationale. The most important decision (the
 Python runtime) is first.
 
-## Python runtime: embeddable zip  ->  uv-managed standalone CPython + venv
+## Python runtime: embeddable zip  ->  python-build-standalone (self-extracted) + venv
 
-- **Changed:** Dropped the embeddable Python zip and its `._pth` patching.
-  Instead we bundle **uv** (a single self-contained .exe) and let it provision
-  a private standalone CPython and create an isolated virtual environment, all
-  under `%LOCALAPPDATA%\OpenWebUI`.
-- **Why:** The embeddable zip is fragile for an app like Open WebUI, which has a
-  heavy dependency tree and compiled wheels; site configuration and some
-  packages routinely break on it. uv installs the same `python-build-standalone`
-  CPython the spec recommends (spec Option B), handles wheels correctly, creates
-  a proper venv (not the interpreter's global site-packages), and is scoped
-  entirely inside the install dir via `UV_PYTHON_INSTALL_DIR`, `UV_CACHE_DIR`,
-  and `UV_NO_MODIFY_PATH=1`. It never touches system Python or PATH.
-- **Why uv over downloading python-build-standalone tarballs directly:** the
-  raw GitHub release assets use dated, version-specific URLs that rot (the
-  "latest" tag at build time even carried only a 3.10 build), and the tarballs
-  need manual extraction. uv has a stable `releases/latest/download` URL and
-  resolves the correct CPython for us, which is far more reliable to maintain.
+- **Changed:** Dropped the embeddable Python zip and its `._pth` patching. We
+  download a pinned **python-build-standalone** CPython 3.12 (`install_only`
+  build, spec Option B), extract it ourselves with the built-in `tar.exe` under
+  `%LOCALAPPDATA%\OpenWebUI`, then create an isolated venv with CPython's own
+  `python -m venv`. `uv` is still bundled, but only as the fast package installer
+  (`uv pip install`) into that venv.
+- **Why python-build-standalone, extracted by us:** it is purpose-built for
+  embedding, ships the latest patch release, handles compiled wheels, and extracts
+  to plain real folders. That last point matters: see the os-error-448 fix below.
+- **Why not uv-managed Python (the earlier approach):** uv lays its managed
+  interpreters out behind a directory junction (the "minor version link"). On a
+  real Windows 11 test machine, traversing that junction failed with "untrusted
+  mount point" (os error 448) because the OS enforces redirection trust on
+  junctions created by a normal-user process. Self-extracting a tarball avoids
+  junctions entirely.
+- **Why not the python.org installer (spec Option A):** Python 3.12 is in its
+  security-only phase and ships source only (no Windows `.exe` installer for
+  current patches), and Open WebUI requires Python `< 3.13`, so there is no
+  current official installer to use.
+- **URL rot:** addressed by pinning a dated `python-build-standalone` release URL
+  (verified to return 200), rather than a `latest/download` URL that breaks when
+  the dated asset filename changes.
 
 ## Python version: pinned to 3.12 (verified, not assumed)
 
@@ -149,12 +155,14 @@ Python runtime) is first.
   such line became a terminating `NativeCommandError` and killed the install at
   "Provisioning CPython". `Invoke-Exe` and the ollama list/pull block now relax
   the error preference for the native call and judge success by exit code only.
-- **No more global Python shims (os error 448).** `uv python install` also tries
-  to create a global "minor version link" junction, which failed on Windows 11
-  with "untrusted mount point". We dropped the standalone install step and let
-  `uv venv --python 3.12` provision the managed interpreter on demand (no global
-  shims), and set `UV_PYTHON_PREFERENCE=only-managed` and
-  `UV_PYTHON_INSTALL_BIN=0` for isolation and as defense.
+- **Abandoned uv-managed Python (os error 448).** First we found `uv python
+  install` failed creating a global "minor version link" junction; suppressing
+  that was not enough, because `uv venv` then failed merely *reading* the managed
+  interpreter through the same junction ("untrusted mount point"). Root cause: the
+  machine enforces redirection trust on junctions made by a normal-user process.
+  Switched to self-extracted python-build-standalone (real folders, no junctions)
+  plus `python -m venv`, and set `UV_LINK_MODE=copy` so `uv pip` never uses
+  hardlinks/symlinks either.
 
 ## Notes / things to re-verify when maintaining
 
