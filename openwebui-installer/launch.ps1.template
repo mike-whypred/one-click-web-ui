@@ -1,0 +1,171 @@
+<#
+===============================================================================
+ launch.ps1.template  ->  generated into %LOCALAPPDATA%\OpenWebUI\launch.ps1
+
+ This is the EVERYDAY runtime launcher. install.ps1 fills in the {{...}}
+ placeholders below and writes the result to launch.ps1. The desktop shortcut
+ runs it through launch-hidden.vbs so no console window ever appears.
+
+ What it does, every time the user double-clicks the shortcut:
+   1. Make sure the Ollama server is running (start it hidden if not), waiting
+      on its API rather than sleeping a fixed amount.
+   2. Make sure Open WebUI is running. If our own instance is already up, just
+      reopen the browser to it (no duplicate server). If not, pick a free port,
+      start it hidden, and wait for its /health endpoint.
+   3. Open the default browser to the right URL.
+   4. On any failure, show a plain-language popup with the log path. Because we
+      run hidden, errors go to a dialog (not a console the user cannot see).
+
+ Robust "already running" detection: we record the server PID and port in
+ runtime\openwebui.pid / openwebui.port when we start it, and on the next launch
+ we confirm that PID is alive AND its executable lives under the install root.
+ This avoids the prototype's fragile path-substring process matching and never
+ kills or duplicates an existing instance.
+
+ PowerShell 5.1 compatible. No em dashes in user-facing text.
+===============================================================================
+#>
+
+$ErrorActionPreference = 'Stop'
+
+# --- Values baked in at install time -----------------------------------------
+$PreferredPort = {{PREFERRED_PORT}}
+$InstallRoot   = "{{INSTALL_ROOT}}"
+$VenvDir       = "{{VENV_DIR}}"
+$OllamaExe     = "{{OLLAMA_EXE}}"
+
+# --- Derived paths -----------------------------------------------------------
+$RuntimeDir   = Join-Path $InstallRoot "runtime"
+$DataDir      = Join-Path $InstallRoot "data"
+$LogDir       = Join-Path $InstallRoot "logs"
+$PidFile      = Join-Path $RuntimeDir "openwebui.pid"
+$PortFile     = Join-Path $RuntimeDir "openwebui.port"
+$OpenWebUIExe = Join-Path $VenvDir "Scripts\open-webui.exe"
+$OllamaApiUrl = "http://localhost:11434"
+
+if (-not (Test-Path $RuntimeDir)) { New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null }
+if (-not (Test-Path $LogDir))     { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+
+$LaunchLog = Join-Path $LogDir ("launch-" + (Get-Date).ToString("yyyyMMdd-HHmmss") + ".log")
+function Log { param([string]$m) ("[" + (Get-Date).ToString("HH:mm:ss") + "] " + $m) | Out-File -FilePath $LaunchLog -Append -Encoding utf8 }
+
+# Friendly error popup (we are hidden, so we cannot print to a console).
+function Show-Error {
+    param([string]$Message)
+    Log ("ERROR: " + $Message)
+    $full = $Message + "`n`nA log file with details is here:`n" + $LaunchLog
+    try {
+        $wshell = New-Object -ComObject WScript.Shell
+        # 0 = OK button, 16 = Critical icon.
+        $wshell.Popup($full, 0, "Open WebUI", 16) | Out-Null
+    } catch { }
+    exit 1
+}
+
+# --- Helpers -----------------------------------------------------------------
+
+function Test-PortFree {
+    param([int]$Port)
+    $listener = $null
+    try {
+        $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start(); return $true
+    } catch { return $false } finally { if ($listener) { $listener.Stop() } }
+}
+
+function Get-FreePort {
+    param([int]$Start)
+    for ($p = $Start; $p -lt ($Start + 50); $p++) { if (Test-PortFree -Port $p) { return $p } }
+    throw "No free network port near $Start."
+}
+
+# Wait until an HTTP endpoint answers (any response counts), or time out.
+function Wait-HttpReady {
+    param([string]$Url, [int]$TimeoutSec = 120)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try { Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5 | Out-Null; return $true }
+        catch { if ($_.Exception.Response) { return $true }; Start-Sleep -Seconds 2 }
+    }
+    return $false
+}
+
+# Is OUR Open WebUI instance already running? Returns its port, or $null.
+# We trust the recorded PID only if that process is alive and its executable
+# lives under the install root (so we never adopt or kill an unrelated process).
+function Get-RunningPort {
+    if (-not (Test-Path $PidFile) -or -not (Test-Path $PortFile)) { return $null }
+    try {
+        $savedPid  = [int](Get-Content $PidFile -Raw).Trim()
+        $savedPort = [int](Get-Content $PortFile -Raw).Trim()
+    } catch { return $null }
+
+    $proc = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
+    if (-not $proc) { return $null }
+    try {
+        $path = $proc.Path
+        if (-not $path -or -not ($path.ToLower().StartsWith($InstallRoot.ToLower()))) { return $null }
+    } catch { return $null }
+
+    # Confirm it actually answers on the recorded port before reusing it.
+    if (Wait-HttpReady -Url ("http://localhost:" + $savedPort + "/health") -TimeoutSec 3) { return $savedPort }
+    if (Wait-HttpReady -Url ("http://localhost:" + $savedPort + "/") -TimeoutSec 3) { return $savedPort }
+    return $null
+}
+
+# --- 1. Ensure Ollama is running ---------------------------------------------
+function Ensure-Ollama {
+    if (Wait-HttpReady -Url $OllamaApiUrl -TimeoutSec 2) { Log "Ollama already running."; return }
+    if (-not (Test-Path $OllamaExe)) { Show-Error "Ollama is not where we expected it. Please run the installer again." }
+    Log "Starting Ollama server (hidden)."
+    Start-Process -FilePath $OllamaExe -ArgumentList "serve" -WindowStyle Hidden | Out-Null
+    if (-not (Wait-HttpReady -Url $OllamaApiUrl -TimeoutSec 60)) {
+        Show-Error "The Ollama engine did not start. Try restarting your PC, then use the shortcut again."
+    }
+    Log "Ollama is up."
+}
+
+# --- 2. Ensure Open WebUI is running, return its port ------------------------
+function Ensure-OpenWebUI {
+    $running = Get-RunningPort
+    if ($running) { Log ("Open WebUI already running on port " + $running + "."); return $running }
+
+    if (-not (Test-Path $OpenWebUIExe)) { Show-Error "Open WebUI is not installed correctly. Please run the installer again." }
+
+    $port = Get-FreePort -Start $PreferredPort
+    Log ("Starting Open WebUI on port " + $port + " (hidden).")
+
+    # Keep all app data local and stable across upgrades.
+    $env:DATA_DIR = $DataDir
+
+    $proc = Start-Process -FilePath $OpenWebUIExe `
+        -ArgumentList @("serve","--host","127.0.0.1","--port","$port") `
+        -WindowStyle Hidden -PassThru
+
+    # Record PID + port so the next launch can detect this instance.
+    $proc.Id   | Out-File -FilePath $PidFile  -Encoding ascii -Force
+    "$port"    | Out-File -FilePath $PortFile -Encoding ascii -Force
+
+    # Open WebUI's first start can be slow (it initialises a database and
+    # downloads small embedding assets if online), so allow a generous timeout.
+    if (-not (Wait-HttpReady -Url ("http://localhost:" + $port + "/health") -TimeoutSec 180)) {
+        if (-not (Wait-HttpReady -Url ("http://localhost:" + $port + "/") -TimeoutSec 30)) {
+            Show-Error "Open WebUI started but did not become ready in time. Wait a moment and use the shortcut again."
+        }
+    }
+    Log "Open WebUI is ready."
+    return $port
+}
+
+# --- Main --------------------------------------------------------------------
+try {
+    Ensure-Ollama
+    $port = Ensure-OpenWebUI
+    $url = "http://localhost:" + $port
+    Log ("Opening browser to " + $url)
+    Start-Process $url    # opens the user's default browser
+    exit 0
+}
+catch {
+    Show-Error ("Something went wrong starting Open WebUI: " + $_.Exception.Message)
+}

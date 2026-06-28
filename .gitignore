@@ -1,0 +1,21 @@
+# Inno Setup build output (compiled artifacts do not belong in git;
+# attach setup.exe to a GitHub Release instead).
+dist/
+Output/
+*.exe
+
+# Runtime / install artifacts (these are created on the user's machine, never
+# committed). Listed defensively in case anyone runs the installer inside a clone.
+openwebui-installer/launch.ps1
+openwebui-installer/launch-hidden.vbs
+openwebui-installer/logs/
+openwebui-installer/data/
+openwebui-installer/runtime/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
