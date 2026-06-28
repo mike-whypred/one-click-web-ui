@@ -45,6 +45,11 @@ param()
 # Stop on any uncaught error so our trap can turn it into a friendly message.
 $ErrorActionPreference = 'Stop'
 
+# Installer version. Printed in the banner and as the first log line so we can
+# always tell from a log which build actually ran (running a stale setup.exe from
+# a Downloads folder is otherwise indistinguishable). Bump this with each release.
+$ScriptVersion = "1.0.5"
+
 # ---------------------------------------------------------------------------
 # CONSTANTS  (exposed at the top of the file, as required by the spec)
 # ---------------------------------------------------------------------------
@@ -122,7 +127,7 @@ function Initialize-Logging {
     if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
     $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
     $script:LogFile = Join-Path $LogDir "install-$stamp.log"
-    "=== Open WebUI install started $(Get-Date) ===" | Out-File -FilePath $script:LogFile -Encoding utf8
+    "=== Open WebUI installer v$ScriptVersion started $(Get-Date) ===" | Out-File -FilePath $script:LogFile -Encoding utf8
 }
 
 # Write-Log: one place for both the on-screen message and the log file.
@@ -649,7 +654,7 @@ $script:LauncherVbs = $null
 try {
     Initialize-Logging
     Write-Host ""
-    Write-Host "Open WebUI installer" -ForegroundColor White
+    Write-Host ("Open WebUI installer  (v" + $ScriptVersion + ")") -ForegroundColor White
     Write-Host "This sets up a private AI chat app on your PC. It can take a while"
     Write-Host "the first time (it downloads a few large files). You can leave it running."
 
