@@ -152,7 +152,7 @@ begin
 
     Exec('powershell.exe', Params, '', SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
     { uninstall.ps1 removes the runtime folder and desktop shortcut; Inno then
-      removes {app} and the Start Menu icon. }
+      removes the program folder and the Start Menu icon. }
   end;
 end;
 
