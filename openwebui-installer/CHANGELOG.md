@@ -164,6 +164,17 @@ Python runtime) is first.
   plus `python -m venv`, and set `UV_LINK_MODE=copy` so `uv pip` never uses
   hardlinks/symlinks either.
 
+## Pre-emptive hardening (before testing the later steps)
+
+- **Live console output during long steps.** `Invoke-Exe` now echoes each line to
+  the console as well as the log, so the multi-minute `uv pip install open-webui`
+  no longer looks frozen.
+- **Longer first-launch timeout.** The launcher waits up to 300s (was 180s) for
+  Open WebUI's `/health`, since the very first start runs DB migrations and may
+  fetch a small embedding model.
+- **Pinned tar.exe** to the System32 copy so extraction always uses Windows'
+  bundled bsdtar, not some other `tar` earlier on PATH.
+
 ## Notes / things to re-verify when maintaining
 
 - `$ModelName = "gemma4:e4b"` is kept as a named constant per the spec. Confirm

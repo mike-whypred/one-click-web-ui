@@ -148,9 +148,9 @@ function Ensure-OpenWebUI {
 
     # Open WebUI's first start can be slow (it initialises a database and
     # downloads small embedding assets if online), so allow a generous timeout.
-    if (-not (Wait-HttpReady -Url ("http://localhost:" + $port + "/health") -TimeoutSec 180)) {
+    if (-not (Wait-HttpReady -Url ("http://localhost:" + $port + "/health") -TimeoutSec 300)) {
         if (-not (Wait-HttpReady -Url ("http://localhost:" + $port + "/") -TimeoutSec 30)) {
-            Show-Error "Open WebUI started but did not become ready in time. Wait a moment and use the shortcut again."
+            Show-Error "Open WebUI started but did not become ready in time. Wait a moment and use the shortcut again (the very first start is the slowest)."
         }
     }
     Log "Open WebUI is ready."

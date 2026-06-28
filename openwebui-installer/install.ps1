@@ -271,7 +271,13 @@ function Invoke-Exe {
     try {
         & $FilePath @Arguments 2>&1 | ForEach-Object {
             # $_ may be a string or an ErrorRecord (stderr); stringify either way.
-            ("" + $_) | Out-File -FilePath $script:LogFile -Append -Encoding utf8
+            $line = "" + $_
+            $line | Out-File -FilePath $script:LogFile -Append -Encoding utf8
+            # Echo to the console too. The heaviest step (uv pip install) runs for
+            # several minutes; without live output the window looks frozen and a
+            # nervous user might close it. (uv detects the redirected pipe and
+            # prints plain line-based progress, so this stays readable.)
+            Write-Host ("   " + $line)
         }
     } finally {
         $ErrorActionPreference = $prevEap
@@ -491,8 +497,12 @@ function Install-Python {
     Invoke-Download -Url $PythonUrl -OutFile $tgz
     Write-Log ("Extracting CPython " + $PythonVersion + "...")
     # tar.exe (bsdtar) ships with Windows 10 1803+ and extracts .tar.gz natively.
-    # The archive's single top-level folder is "python", so it lands at $PythonDir.
-    Invoke-Exe -FilePath "tar.exe" -Arguments @("-xf",$tgz,"-C",$PyBase) -What "Extracting Python"
+    # Use the System32 copy by full path so we never pick up some other "tar" that
+    # happens to be earlier on PATH (Git, choco, etc.). The archive's single
+    # top-level folder is "python", so it lands at $PythonDir.
+    $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+    if (-not (Test-Path $tarExe)) { $tarExe = "tar.exe" }  # fall back to PATH
+    Invoke-Exe -FilePath $tarExe -Arguments @("-xf",$tgz,"-C",$PyBase) -What "Extracting Python"
     Remove-Item $tgz -ErrorAction SilentlyContinue
 
     if (-not (Test-Path $BundledPython)) {
