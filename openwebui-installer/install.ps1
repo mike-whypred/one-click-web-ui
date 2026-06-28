@@ -245,12 +245,25 @@ function Wait-HttpReady {
     return $false
 }
 
-# Run an external exe, stream nothing fancy, and throw on non-zero exit.
+# Run an external exe, log its output, and throw ONLY on a non-zero exit code.
+#
+# Important: tools like uv and pip write normal progress to stderr. With
+# $ErrorActionPreference='Stop' in force, merging stderr via 2>&1 would turn
+# each progress line into a terminating NativeCommandError and abort the
+# install even on success. So we relax the preference for the duration of the
+# call and judge success purely by the exit code.
 function Invoke-Exe {
     param([string]$FilePath, [string[]]$Arguments, [string]$What)
     Write-Log ("Running: " + $FilePath + " " + ($Arguments -join ' '))
-    & $FilePath @Arguments 2>&1 | ForEach-Object {
-        $_ | Out-File -FilePath $script:LogFile -Append -Encoding utf8
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $FilePath @Arguments 2>&1 | ForEach-Object {
+            # $_ may be a string or an ErrorRecord (stderr); stringify either way.
+            ("" + $_) | Out-File -FilePath $script:LogFile -Append -Encoding utf8
+        }
+    } finally {
+        $ErrorActionPreference = $prevEap
     }
     if ($LASTEXITCODE -ne 0) {
         throw ("$What failed (exit code $LASTEXITCODE). See log for details.")
@@ -396,27 +409,35 @@ function Start-OllamaServer {
 function Invoke-ModelSetup {
     Write-Log "Checking for an AI model..." 'STEP'
 
-    # "ollama list" prints a header row plus one row per model. If the user
-    # already has ANY model, we skip the download entirely (per spec).
-    $list = & $script:OllamaExe list 2>&1 | Out-String
-    $rows = $list -split "`n" | Where-Object { $_.Trim() -ne '' }
-    $modelCount = [Math]::Max(0, $rows.Count - 1)  # minus the header line
+    # Native ollama calls write progress to stderr; relax the error preference
+    # so a stderr line is not turned into a terminating error (see Invoke-Exe).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # "ollama list" prints a header row plus one row per model. If the user
+        # already has ANY model, we skip the download entirely (per spec).
+        $list = & $script:OllamaExe list 2>&1 | Out-String
+        $rows = $list -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $modelCount = [Math]::Max(0, $rows.Count - 1)  # minus the header line
 
-    if ($modelCount -ge 1) {
-        Write-Log ("You already have " + $modelCount + " model(s) installed. Skipping the download; they will appear in the Open WebUI dropdown.") 'OK'
-        return
-    }
+        if ($modelCount -ge 1) {
+            Write-Log ("You already have " + $modelCount + " model(s) installed. Skipping the download; they will appear in the Open WebUI dropdown.") 'OK'
+            return
+        }
 
-    Write-Log ("No models found. Downloading the default model (" + $ModelName + ", about 10 GB). This is the slow part; please leave it running...")
-    # ollama pull streams progress; route it through our logger.
-    & $script:OllamaExe pull $ModelName 2>&1 | ForEach-Object {
-        $_ | Out-File -FilePath $script:LogFile -Append -Encoding utf8
-        Write-Host ("   " + $_)
+        Write-Log ("No models found. Downloading the default model (" + $ModelName + ", about 10 GB). This is the slow part; please leave it running...")
+        # ollama pull streams progress; route it through our logger.
+        & $script:OllamaExe pull $ModelName 2>&1 | ForEach-Object {
+            ("" + $_) | Out-File -FilePath $script:LogFile -Append -Encoding utf8
+            Write-Host ("   " + $_)
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw ("Downloading the model '" + $ModelName + "' failed.")
+        }
+        Write-Log ("Model " + $ModelName + " is ready.") 'OK'
+    } finally {
+        $ErrorActionPreference = $prevEap
     }
-    if ($LASTEXITCODE -ne 0) {
-        throw ("Downloading the model '" + $ModelName + "' failed.")
-    }
-    Write-Log ("Model " + $ModelName + " is ready.") 'OK'
 }
 
 # ---------------------------------------------------------------------------

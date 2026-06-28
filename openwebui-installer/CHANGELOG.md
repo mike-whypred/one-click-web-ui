@@ -142,6 +142,14 @@ Python runtime) is first.
   `-NonInteractive` / `-RemoveModels` switches so the Inno uninstaller can run it
   without prompts.
 
+## Fixes after first real-hardware run (Windows 11)
+
+- **Native stderr no longer aborts the install.** uv and pip write normal
+  progress to stderr; with `$ErrorActionPreference='Stop'` plus `2>&1`, the first
+  such line became a terminating `NativeCommandError` and killed the install at
+  "Provisioning CPython". `Invoke-Exe` and the ollama list/pull block now relax
+  the error preference for the native call and judge success by exit code only.
+
 ## Notes / things to re-verify when maintaining
 
 - `$ModelName = "gemma4:e4b"` is kept as a named constant per the spec. Confirm
