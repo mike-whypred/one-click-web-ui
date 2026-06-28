@@ -5,8 +5,12 @@ working local AI chat app (**Open WebUI + Ollama**) with no terminal, no Docker,
 no manual config, and no system Python dependency. After the first install it
 runs fully offline on the user's own PC.
 
-> Looking for end-user install instructions? See
+> **Just want to install it?** Download `setup.exe` from the
+> [Releases page](https://github.com/mike-whypred/one-click-web-ui/releases/latest)
+> and double-click it. Full end-user instructions are in
 > [`openwebui-installer/README.md`](openwebui-installer/README.md).
+> (`setup.exe` is built automatically on a Windows runner whenever a `v*` tag is
+> pushed; see `.github/workflows/build-installer.yml`.)
 
 ## What this repo contains
 

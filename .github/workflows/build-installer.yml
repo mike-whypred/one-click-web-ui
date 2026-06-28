@@ -1,0 +1,78 @@
+# Builds the one-file installer (setup.exe) on a Windows runner and publishes it
+# to a GitHub Release, so a non-technical user can download a single file from
+# the Releases page instead of cloning the repo and running scripts.
+#
+# Triggers:
+#   - Push a tag like v1.0.0  -> builds and attaches setup.exe to that Release.
+#   - Manual "Run workflow"   -> builds setup.exe and uploads it as a downloadable
+#                                Actions artifact (no Release created).
+name: Build installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp into setup.exe (e.g. 1.0.0)'
+        required: false
+        default: '0.0.0-dev'
+
+# Needed so the workflow can create/upload a Release.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $v = $env:GITHUB_REF_NAME -replace '^v',''
+          } else {
+            $v = '${{ github.event.inputs.version }}'
+          }
+          if (-not $v) { $v = '0.0.0-dev' }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building setup.exe version $v"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile setup.exe
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "openwebui-installer\setup.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)" }
+          if (-not (Test-Path "openwebui-installer\dist\setup.exe")) { throw "setup.exe was not produced" }
+
+      - name: Upload setup.exe as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-exe
+          path: openwebui-installer/dist/setup.exe
+          if-no-files-found: error
+
+      - name: Publish setup.exe to the Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          # Create the Release if it does not exist yet, then upload (clobbering
+          # any prior asset of the same name) so re-runs are safe.
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --notes "Double-click setup.exe to install Open WebUI on Windows 10/11. No Docker, no Python, no admin needed. See the README for what to expect (a large first-time download)."
+          }
+          gh release upload $tag "openwebui-installer/dist/setup.exe" --clobber

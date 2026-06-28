@@ -30,7 +30,11 @@
 ; ============================================================================
 
 #define AppName "Open WebUI"
-#define AppVersion "1.0.0"
+; AppVersion can be overridden from the command line by the CI build
+; (ISCC /DAppVersion=1.2.3). Falls back to this default for local compiles.
+#ifndef AppVersion
+  #define AppVersion "1.0.0"
+#endif
 #define AppPublisher "Open WebUI Installer"
 
 [Setup]
