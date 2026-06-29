@@ -1,0 +1,77 @@
+# Runs the installer for real on a genuine x64 Windows runner, then starts Open
+# WebUI and checks its /health endpoint. This lets us reproduce and debug runtime
+# startup problems (the "the app does not open" class) without a physical Windows
+# machine. It does NOT install Ollama or pull the model (OWUI_SKIP_OLLAMA=1), and
+# it cannot test the GUI shortcut or a browser, but it does exercise the full
+# Python / venv / "uv pip install open-webui" / open-webui serve path.
+name: Smoke test (real Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'openwebui-installer/install.ps1'
+      - 'openwebui-installer/launch.ps1.template'
+      - '.github/workflows/smoke-test.yml'
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Run installer (Windows PowerShell 5.1, Ollama skipped)
+        shell: pwsh
+        env:
+          OWUI_SKIP_OLLAMA: "1"
+        run: |
+          # Invoke Windows PowerShell 5.1 explicitly so we test the same engine
+          # end users have, not the runner's PowerShell 7.
+          powershell -NoProfile -ExecutionPolicy Bypass -File openwebui-installer\install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with $LASTEXITCODE" }
+
+      - name: Start Open WebUI and poll /health
+        shell: pwsh
+        run: |
+          $exe = "$env:LOCALAPPDATA\OpenWebUI\venv\Scripts\open-webui.exe"
+          if (-not (Test-Path $exe)) { throw "open-webui.exe is missing at $exe" }
+          $env:DATA_DIR = "$env:LOCALAPPDATA\OpenWebUI\data"
+          $log = "$env:LOCALAPPDATA\OpenWebUI\logs\smoke-server.out.log"
+          $err = "$env:LOCALAPPDATA\OpenWebUI\logs\smoke-server.err.log"
+          $p = Start-Process -FilePath $exe `
+                 -ArgumentList @("serve","--host","127.0.0.1","--port","8080") `
+                 -NoNewWindow -PassThru `
+                 -RedirectStandardOutput $log -RedirectStandardError $err
+          $ok = $false
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { Write-Host "Server process exited early (code $($p.ExitCode))"; break }
+            try { Invoke-WebRequest "http://127.0.0.1:8080/health" -UseBasicParsing -TimeoutSec 5 | Out-Null; $ok = $true; break } catch {}
+          }
+          Write-Host "===== server stdout (tail) ====="
+          if (Test-Path $log) { Get-Content $log -Tail 80 }
+          Write-Host "===== server stderr (tail) ====="
+          if (Test-Path $err) { Get-Content $err -Tail 80 }
+          if (-not $ok) { throw "Open WebUI did not answer /health in time" }
+          Write-Host "HEALTH OK: Open WebUI is serving."
+
+      - name: Collect logs for download
+        if: always()
+        shell: pwsh
+        run: |
+          $dest = "$env:GITHUB_WORKSPACE\smoke-logs"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          if (Test-Path "$env:LOCALAPPDATA\OpenWebUI\logs") {
+            Copy-Item "$env:LOCALAPPDATA\OpenWebUI\logs\*" $dest -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: smoke-logs
+          if-no-files-found: warn

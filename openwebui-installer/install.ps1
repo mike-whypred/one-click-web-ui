@@ -579,6 +579,11 @@ function Install-OpenWebUI {
 function Write-Launcher {
     Write-Log "Creating the launcher and shortcut..." 'STEP'
 
+    # In normal installs $script:OllamaExe is always set by Invoke-OllamaSetup. In
+    # test mode (OWUI_SKIP_OLLAMA) it is null, so fall back to resolving "ollama"
+    # from PATH at runtime, keeping the generated launcher valid.
+    if (-not $script:OllamaExe) { $script:OllamaExe = "ollama.exe" }
+
     # Decide a port now so the launcher has a sensible starting point. The
     # launcher re-validates at runtime and will move on if this port is taken
     # later, but baking the preferred value keeps install and launch consistent.
@@ -659,9 +664,16 @@ try {
     Write-Host "the first time (it downloads a few large files). You can leave it running."
 
     Invoke-Preflight
-    Invoke-OllamaSetup
-    Start-OllamaServer
-    Invoke-ModelSetup
+    # OWUI_SKIP_OLLAMA=1 skips the Ollama install, server start, and model pull.
+    # Used only by the automated Windows smoke test (CI) to exercise the Python /
+    # venv / Open WebUI / launcher path quickly. Never set in real installs.
+    if ($env:OWUI_SKIP_OLLAMA -eq "1") {
+        Write-Log "OWUI_SKIP_OLLAMA=1 set: skipping Ollama and model steps (test mode)." 'WARN'
+    } else {
+        Invoke-OllamaSetup
+        Start-OllamaServer
+        Invoke-ModelSetup
+    }
     Install-Uv
     Install-Python
     Install-OpenWebUI
